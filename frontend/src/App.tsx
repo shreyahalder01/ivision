@@ -18,6 +18,7 @@ import {
   getJobResults,
   connectJobWebSocket,
 } from './api';
+import { client as appwriteClient } from './lib/appwrite';
 
 export const App: React.FC = () => {
   const [activeTab, setActiveTab] = useState<'studio' | 'analytics' | 'exports' | 'history'>('studio');
@@ -27,8 +28,13 @@ export const App: React.FC = () => {
   const [resultsOverlay, setResultsOverlay] = useState<ResultsOverlayPayload | null>(null);
   const [isSystemModalOpen, setIsSystemModalOpen] = useState(false);
 
-  // Load initial system data
+  // Load initial system data & ping Appwrite
   useEffect(() => {
+    // Ping Appwrite backend to verify connection
+    appwriteClient.ping()
+      .then((res) => console.log('Appwrite ping verified:', res))
+      .catch((err) => console.debug('Appwrite ping:', err));
+
     fetchCapabilities()
       .then((caps) => setSystemCaps(caps))
       .catch((err) => console.error('Capabilities error', err));
