@@ -9,15 +9,30 @@ import {
 
 const API_BASE = '/api';
 
+async function parseErrorResponse(res: Response, defaultMessage: string): Promise<Error> {
+  try {
+    const text = await res.text();
+    if (text.includes('<!DOCTYPE') || text.includes('<!doctype') || text.includes('<html')) {
+      return new Error(
+        `Backend server is offline or returned an error (${res.status}). Ensure the backend is running on port 8787.`
+      );
+    }
+    const err = JSON.parse(text);
+    return new Error(err.detail?.message || err.detail || defaultMessage);
+  } catch {
+    return new Error(`${defaultMessage} (status ${res.status})`);
+  }
+}
+
 export async function fetchCapabilities(): Promise<SystemCapabilities> {
   const res = await fetch(`${API_BASE}/system/capabilities`);
-  if (!res.ok) throw new Error('Failed to fetch system capabilities');
+  if (!res.ok) throw await parseErrorResponse(res, 'Failed to fetch system capabilities');
   return res.json();
 }
 
 export async function fetchSampleVideos(): Promise<SampleVideo[]> {
   const res = await fetch(`${API_BASE}/videos/samples`);
-  if (!res.ok) throw new Error('Failed to fetch sample videos');
+  if (!res.ok) throw await parseErrorResponse(res, 'Failed to fetch sample videos');
   return res.json();
 }
 
@@ -50,23 +65,49 @@ export async function uploadVideo(
     }
 
     xhr.onload = () => {
+      const isHtml =
+        xhr.responseText.includes('<!DOCTYPE') ||
+        xhr.responseText.includes('<!doctype') ||
+        xhr.responseText.includes('<html');
+
       if (xhr.status >= 200 && xhr.status < 300) {
         try {
           resolve(JSON.parse(xhr.responseText));
         } catch (e) {
-          reject(new Error('Invalid response from server'));
+          if (isHtml) {
+            reject(
+              new Error(
+                'Backend server is offline or unreachable. Please make sure the Python backend is running on port 8787 (python backend/run_server.py).'
+              )
+            );
+          } else {
+            reject(new Error('Invalid response from server: received non-JSON data'));
+          }
         }
       } else {
         try {
           const err = JSON.parse(xhr.responseText);
           reject(new Error(err.detail?.message || err.detail || 'Upload failed'));
         } catch {
-          reject(new Error(`Upload failed with status ${xhr.status}`));
+          if (isHtml) {
+            reject(
+              new Error(
+                `Backend server is offline or returned an error (status ${xhr.status}). Ensure the backend is running on port 8787.`
+              )
+            );
+          } else {
+            reject(new Error(`Upload failed with status ${xhr.status}`));
+          }
         }
       }
     };
 
-    xhr.onerror = () => reject(new Error('Network error during upload'));
+    xhr.onerror = () =>
+      reject(
+        new Error(
+          'Network error during upload. Ensure the backend server is running on http://127.0.0.1:8787.'
+        )
+      );
     xhr.send(formData);
   });
 }
@@ -87,10 +128,7 @@ export async function createJob(payload: {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload),
   });
-  if (!res.ok) {
-    const err = await res.json();
-    throw new Error(err.detail?.message || err.detail || 'Failed to create job');
-  }
+  if (!res.ok) throw await parseErrorResponse(res, 'Failed to create job');
   return res.json();
 }
 
@@ -101,40 +139,40 @@ export async function listJobs(limit = 50, offset = 0, status?: string): Promise
   const params = new URLSearchParams({ limit: String(limit), offset: String(offset) });
   if (status) params.append('status', status);
   const res = await fetch(`${API_BASE}/jobs?${params.toString()}`);
-  if (!res.ok) throw new Error('Failed to list jobs');
+  if (!res.ok) throw await parseErrorResponse(res, 'Failed to list jobs');
   return res.json();
 }
 
 export async function getJob(jobId: string): Promise<Job> {
   const res = await fetch(`${API_BASE}/jobs/${jobId}`);
-  if (!res.ok) throw new Error('Failed to fetch job');
+  if (!res.ok) throw await parseErrorResponse(res, 'Failed to fetch job');
   return res.json();
 }
 
 export async function cancelJob(jobId: string): Promise<void> {
   const res = await fetch(`${API_BASE}/jobs/${jobId}/cancel`, { method: 'POST' });
-  if (!res.ok) throw new Error('Failed to cancel job');
+  if (!res.ok) throw await parseErrorResponse(res, 'Failed to cancel job');
 }
 
 export async function resumeJob(jobId: string): Promise<void> {
   const res = await fetch(`${API_BASE}/jobs/${jobId}/resume`, { method: 'POST' });
-  if (!res.ok) throw new Error('Failed to resume job');
+  if (!res.ok) throw await parseErrorResponse(res, 'Failed to resume job');
 }
 
 export async function deleteJob(jobId: string): Promise<void> {
   const res = await fetch(`${API_BASE}/jobs/${jobId}`, { method: 'DELETE' });
-  if (!res.ok) throw new Error('Failed to delete job');
+  if (!res.ok) throw await parseErrorResponse(res, 'Failed to delete job');
 }
 
 export async function getJobResults(jobId: string): Promise<ResultsOverlayPayload> {
   const res = await fetch(`${API_BASE}/jobs/${jobId}/results`);
-  if (!res.ok) throw new Error('Failed to fetch job results');
+  if (!res.ok) throw await parseErrorResponse(res, 'Failed to fetch job results');
   return res.json();
 }
 
 export async function getJobTracks(jobId: string): Promise<TrackRecord[]> {
   const res = await fetch(`${API_BASE}/jobs/${jobId}/tracks`);
-  if (!res.ok) throw new Error('Failed to fetch tracks');
+  if (!res.ok) throw await parseErrorResponse(res, 'Failed to fetch tracks');
   return res.json();
 }
 
@@ -148,16 +186,13 @@ export async function createExport(
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ format, options }),
   });
-  if (!res.ok) {
-    const err = await res.json();
-    throw new Error(err.detail?.message || err.detail || 'Failed to start export');
-  }
+  if (!res.ok) throw await parseErrorResponse(res, 'Failed to start export');
   return res.json();
 }
 
 export async function listJobExports(jobId: string): Promise<ExportRecord[]> {
   const res = await fetch(`${API_BASE}/jobs/${jobId}/exports`);
-  if (!res.ok) throw new Error('Failed to list exports');
+  if (!res.ok) throw await parseErrorResponse(res, 'Failed to list exports');
   return res.json();
 }
 
