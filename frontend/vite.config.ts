@@ -9,6 +9,7 @@ export default defineConfig({
     // from other devices on the LAN — e.g. a phone at http://<computer-ip>:5173.
     // Vite prints the Network URL to use on mobile when this is enabled.
     host: true,
+    allowedHosts: ['ivision-sl1n.onrender.com', '.onrender.com'],
     proxy: {
       '/api': {
         target: 'http://127.0.0.1:8787',
@@ -19,6 +20,9 @@ export default defineConfig({
         ws: true,
       },
     },
+  },
+  preview: {
+    allowedHosts: ['ivision-sl1n.onrender.com', '.onrender.com'],
   },
   build: {
     outDir: '../dist',
