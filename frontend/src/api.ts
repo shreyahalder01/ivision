@@ -7,7 +7,7 @@ import {
   ExportRecord,
 } from './types';
 
-const API_BASE = '/api';
+const API_BASE = (import.meta.env.VITE_API_BASE_URL || '/api').replace(/\/+$/, '');
 
 async function parseErrorResponse(res: Response, defaultMessage: string): Promise<Error> {
   try {
@@ -208,8 +208,17 @@ export function connectJobWebSocket(
   jobId: string,
   onEvent: (event: any) => void
 ): () => void {
-  const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-  const wsUrl = `${protocol}//${window.location.host}/ws/jobs/${jobId}`;
+  let wsUrl: string;
+  if (import.meta.env.VITE_WS_URL) {
+    wsUrl = `${(import.meta.env.VITE_WS_URL as string).replace(/\/+$/, '')}/ws/jobs/${jobId}`;
+  } else if (API_BASE.startsWith('http')) {
+    const parsed = new URL(API_BASE);
+    const protocol = parsed.protocol === 'https:' ? 'wss:' : 'ws:';
+    wsUrl = `${protocol}//${parsed.host}/ws/jobs/${jobId}`;
+  } else {
+    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    wsUrl = `${protocol}//${window.location.host}/ws/jobs/${jobId}`;
+  }
   let ws: WebSocket | null = new WebSocket(wsUrl);
 
   ws.onmessage = (event) => {
