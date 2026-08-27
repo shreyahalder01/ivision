@@ -7,6 +7,7 @@ import { HistoryView } from './components/HistoryView';
 import { SystemModal } from './components/SystemModal';
 import {
   SystemCapabilities,
+  ClientGpuCapabilities,
   SampleVideo,
   Job,
   ResultsOverlayPayload,
@@ -18,22 +19,23 @@ import {
   getJobResults,
   connectJobWebSocket,
 } from './api';
-import { client as appwriteClient } from './lib/appwrite';
+import { detectClientGpuCapabilities } from './lib/gpuDetection';
 
 export const App: React.FC = () => {
   const [activeTab, setActiveTab] = useState<'studio' | 'analytics' | 'exports' | 'history'>('studio');
   const [systemCaps, setSystemCaps] = useState<SystemCapabilities | null>(null);
+  const [clientCaps, setClientCaps] = useState<ClientGpuCapabilities | null>(null);
   const [sampleVideos, setSampleVideos] = useState<SampleVideo[]>([]);
   const [currentJob, setCurrentJob] = useState<Job | null>(null);
   const [resultsOverlay, setResultsOverlay] = useState<ResultsOverlayPayload | null>(null);
   const [isSystemModalOpen, setIsSystemModalOpen] = useState(false);
 
-  // Load initial system data & ping Appwrite
+  // Load initial system data & client GPU capabilities
   useEffect(() => {
-    // Ping Appwrite backend to verify connection
-    appwriteClient.ping()
-      .then((res) => console.log('Appwrite ping verified:', res))
-      .catch((err) => console.debug('Appwrite ping:', err));
+    // Probe client browser WebGL / WebGPU & mobile capabilities
+    detectClientGpuCapabilities()
+      .then((caps) => setClientCaps(caps))
+      .catch((err) => console.debug('Client GPU capability probe:', err));
 
     fetchCapabilities()
       .then((caps) => setSystemCaps(caps))
@@ -110,6 +112,7 @@ export const App: React.FC = () => {
         activeTab={activeTab}
         onSelectTab={setActiveTab}
         systemCaps={systemCaps}
+        clientCaps={clientCaps}
         onOpenSystemModal={() => setIsSystemModalOpen(true)}
         onLoadSample={handleLoadSampleTraffic}
         isProcessing={!!isProcessing}
@@ -162,6 +165,7 @@ export const App: React.FC = () => {
         isOpen={isSystemModalOpen}
         onClose={() => setIsSystemModalOpen(false)}
         systemCaps={systemCaps}
+        clientCaps={clientCaps}
       />
 
       {/* Footer */}

@@ -9,18 +9,20 @@ import {
   Layers,
   Zap,
 } from 'lucide-react';
-import { SystemCapabilities } from '../types';
+import { SystemCapabilities, ClientGpuCapabilities } from '../types';
 
 interface SystemModalProps {
   isOpen: boolean;
   onClose: () => void;
   systemCaps: SystemCapabilities | null;
+  clientCaps?: ClientGpuCapabilities | null;
 }
 
 export const SystemModal: React.FC<SystemModalProps> = ({
   isOpen,
   onClose,
   systemCaps,
+  clientCaps,
 }) => {
   if (!isOpen || !systemCaps) return null;
 
@@ -29,7 +31,7 @@ export const SystemModal: React.FC<SystemModalProps> = ({
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-md">
-      <div className="relative w-full max-w-2xl rounded-2xl glass-panel border border-slate-700 bg-carbon-950 p-6 space-y-6 shadow-2xl animate-in fade-in zoom-in-95 duration-200">
+      <div className="relative w-full max-w-3xl rounded-2xl glass-panel border border-slate-700 bg-carbon-950 p-6 space-y-6 shadow-2xl animate-in fade-in zoom-in-95 duration-200 max-h-[90vh] overflow-y-auto">
         
         {/* Header */}
         <div className="flex items-center justify-between border-b border-slate-800 pb-4">
@@ -41,7 +43,9 @@ export const SystemModal: React.FC<SystemModalProps> = ({
               <h3 className="text-base font-bold text-slate-100 font-mono">
                 Hardware Acceleration & Environment Diagnostics
               </h3>
-              <p className="text-xs text-slate-400">VisionTrack AI Core v{systemCaps.version}</p>
+              <p className="text-xs text-slate-400">
+                VisionTrack AI Core v{systemCaps.version} • Real-Time Client & Server Capability Engine
+              </p>
             </div>
           </div>
 
@@ -53,34 +57,36 @@ export const SystemModal: React.FC<SystemModalProps> = ({
           </button>
         </div>
 
-        {/* Diagnostic Cards */}
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        {/* Diagnostic Cards (3 Grid) */}
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
           
-          {/* AI Inference Runtime */}
+          {/* 1. AI Inference Runtime (Server) */}
           <div className="p-4 rounded-xl bg-carbon-900/80 border border-slate-800 space-y-3">
             <div className="flex items-center justify-between text-xs font-mono">
-              <span className="font-bold text-slate-300">AI INFERENCE ENGINE</span>
+              <span className="font-bold text-slate-300">SERVER AI RUNTIME</span>
               <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${
                 ai.aiAvailable ? 'bg-emerald-950 text-emerald-400 border border-emerald-800' : 'bg-rose-950 text-rose-400 border border-rose-800'
               }`}>
-                {ai.aiAvailable ? 'READY' : 'OFFLINE'}
+                {ai.aiAvailable ? (ai.gpuAccelerated ? 'CUDA GPU' : 'CPU ENGINE') : 'OFFLINE'}
               </span>
             </div>
 
             <div className="space-y-1.5 text-xs font-mono text-slate-400">
               <div className="flex justify-between">
                 <span>Device:</span>
-                <span className="text-cyan-400 font-semibold">{ai.device} ({ai.deviceName})</span>
-              </div>
-              <div className="flex justify-between">
-                <span>CUDA Support:</span>
-                <span className={ai.cudaAvailable ? 'text-emerald-400' : 'text-slate-500'}>
-                  {ai.cudaAvailable ? `CUDA ${ai.cudaVersion || 'Active'}` : 'Disabled'}
+                <span className="text-cyan-400 font-semibold truncate max-w-[130px]" title={ai.deviceName}>
+                  {ai.deviceName}
                 </span>
               </div>
               <div className="flex justify-between">
-                <span>GPU VRAM:</span>
-                <span className="text-slate-200">{ai.vramTotalGb ? `${ai.vramTotalGb} GB` : 'System RAM'}</span>
+                <span>Mode:</span>
+                <span className={ai.cudaAvailable ? 'text-emerald-400' : 'text-amber-400'}>
+                  {ai.cudaAvailable ? `CUDA ${ai.cudaVersion || 'Active'}` : 'Resilient CPU'}
+                </span>
+              </div>
+              <div className="flex justify-between">
+                <span>Memory:</span>
+                <span className="text-slate-200">{ai.vramTotalGb ? `${ai.vramTotalGb} GB VRAM` : 'Host RAM'}</span>
               </div>
               <div className="flex justify-between">
                 <span>PyTorch:</span>
@@ -93,7 +99,50 @@ export const SystemModal: React.FC<SystemModalProps> = ({
             </div>
           </div>
 
-          {/* Media & Video Codec Engine */}
+          {/* 2. Client Browser & Mobile Acceleration */}
+          <div className="p-4 rounded-xl bg-carbon-900/80 border border-slate-800 space-y-3">
+            <div className="flex items-center justify-between text-xs font-mono">
+              <span className="font-bold text-slate-300">CLIENT / BROWSER GPU</span>
+              <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${
+                clientCaps?.isGpuAccelerated ? 'bg-emerald-950 text-emerald-400 border border-emerald-800' : 'bg-amber-950 text-amber-400 border border-amber-800'
+              }`}>
+                {clientCaps?.isGpuAccelerated ? (clientCaps.webgpuSupported ? 'WEBGPU' : 'WEBGL 2.0') : 'CPU CANVAS'}
+              </span>
+            </div>
+
+            <div className="space-y-1.5 text-xs font-mono text-slate-400">
+              <div className="flex justify-between">
+                <span>Platform:</span>
+                <span className="text-cyan-400 font-semibold capitalize">
+                  {clientCaps?.deviceType || 'Desktop'}
+                </span>
+              </div>
+              <div className="flex justify-between">
+                <span>GPU Renderer:</span>
+                <span className="text-slate-200 truncate max-w-[130px]" title={clientCaps?.renderer || 'Hardware Driver'}>
+                  {clientCaps?.renderer || 'WebGL Renderer'}
+                </span>
+              </div>
+              <div className="flex justify-between">
+                <span>Max Texture:</span>
+                <span className="text-slate-300">{clientCaps?.maxTextureSize ? `${clientCaps.maxTextureSize}px` : 'Standard'}</span>
+              </div>
+              <div className="flex justify-between">
+                <span>CPU Cores / RAM:</span>
+                <span className="text-slate-300">
+                  {clientCaps?.hardwareConcurrency || 4} Cores {clientCaps?.deviceMemoryGb ? `• ${clientCaps.deviceMemoryGb}GB` : ''}
+                </span>
+              </div>
+              <div className="flex justify-between">
+                <span>Canvas Accel:</span>
+                <span className={clientCaps?.canvasHardwareAccelerated ? 'text-emerald-400' : 'text-slate-400'}>
+                  {clientCaps?.canvasHardwareAccelerated ? 'Hardware 2D' : 'Software Fallback'}
+                </span>
+              </div>
+            </div>
+          </div>
+
+          {/* 3. Media & Video Codec Engine */}
           <div className="p-4 rounded-xl bg-carbon-900/80 border border-slate-800 space-y-3">
             <div className="flex items-center justify-between text-xs font-mono">
               <span className="font-bold text-slate-300">FFMPEG MEDIA CODEC</span>
@@ -106,8 +155,8 @@ export const SystemModal: React.FC<SystemModalProps> = ({
 
             <div className="space-y-1.5 text-xs font-mono text-slate-400">
               <div className="flex justify-between">
-                <span>FFmpeg Binary:</span>
-                <span className="text-slate-200 truncate max-w-[160px]" title={ff.ffmpeg.path || ''}>
+                <span>FFmpeg:</span>
+                <span className="text-slate-200 truncate max-w-[130px]" title={ff.ffmpeg.path || ''}>
                   {ff.ffmpeg.source || 'Detected'}
                 </span>
               </div>
@@ -116,12 +165,20 @@ export const SystemModal: React.FC<SystemModalProps> = ({
                 <span className="text-emerald-400 font-semibold">{ff.preferredEncoder}</span>
               </div>
               <div className="flex justify-between">
-                <span>Available Encoders:</span>
-                <span className="text-slate-300">{ff.hardwareEncoders?.join(', ') || 'libx264'}</span>
+                <span>Available:</span>
+                <span className="text-slate-300 truncate max-w-[130px]" title={ff.hardwareEncoders?.join(', ') || 'libx264'}>
+                  {ff.hardwareEncoders?.join(', ') || 'libx264'}
+                </span>
               </div>
               <div className="flex justify-between">
-                <span>FFprobe:</span>
-                <span className="text-slate-300">{ff.ffprobe.available ? 'Ready' : 'Missing'}</span>
+                <span>Probe Decoder:</span>
+                <span className={ff.ffprobe.available ? 'text-emerald-400' : 'text-amber-400'}>
+                  {ff.ffprobe.available ? 'FFprobe Ready' : 'FFmpeg Direct'}
+                </span>
+              </div>
+              <div className="flex justify-between">
+                <span>Transcoding:</span>
+                <span className="text-slate-300">H.264 / AAC Passthrough</span>
               </div>
             </div>
           </div>

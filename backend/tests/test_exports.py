@@ -42,6 +42,7 @@ def check(ok: bool, label: str, detail: str = "") -> bool:
     else:
         failures.append(f"{label}: {detail}")
         print(f"  FAIL  {label}  {detail}")
+        assert ok, f"{label}: {detail}"
     return ok
 
 

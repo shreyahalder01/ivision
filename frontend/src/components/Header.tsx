@@ -10,12 +10,13 @@ import {
   Sparkles,
   Zap,
 } from 'lucide-react';
-import { SystemCapabilities } from '../types';
+import { SystemCapabilities, ClientGpuCapabilities } from '../types';
 
 interface HeaderProps {
   activeTab: 'studio' | 'analytics' | 'exports' | 'history';
   onSelectTab: (tab: 'studio' | 'analytics' | 'exports' | 'history') => void;
   systemCaps: SystemCapabilities | null;
+  clientCaps?: ClientGpuCapabilities | null;
   onOpenSystemModal: () => void;
   onLoadSample: () => void;
   isProcessing: boolean;
@@ -25,12 +26,15 @@ export const Header: React.FC<HeaderProps> = ({
   activeTab,
   onSelectTab,
   systemCaps,
+  clientCaps,
   onOpenSystemModal,
   onLoadSample,
   isProcessing,
 }) => {
   const isGpu = systemCaps?.ai?.gpuAccelerated;
-  const deviceName = systemCaps?.ai?.deviceName || 'Detecting...';
+  const isClientGpu = clientCaps?.isGpuAccelerated;
+  const serverDevice = systemCaps?.ai?.deviceName || 'Server CPU';
+  const clientDevice = clientCaps?.renderer || (clientCaps?.deviceType === 'mobile' ? 'Mobile Browser' : 'Client Browser');
 
   return (
     <header className="sticky top-0 z-40 w-full border-b border-slate-800/80 bg-carbon-950/80 backdrop-blur-xl">
@@ -125,17 +129,18 @@ export const Header: React.FC<HeaderProps> = ({
           {/* Hardware Acceleration Pill */}
           <button
             onClick={onOpenSystemModal}
+            title={`Server: ${serverDevice} (${isGpu ? 'GPU CUDA' : 'CPU Engine'}) | Client: ${clientDevice} (${isClientGpu ? 'WebGL/WebGPU Accelerated' : 'CPU Canvas'})`}
             className={`flex items-center gap-2 px-2.5 py-1 rounded-lg border text-xs font-mono transition-all ${
-              isGpu
+              isGpu || isClientGpu
                 ? 'bg-emerald-950/40 border-emerald-500/40 text-emerald-300 hover:bg-emerald-900/40'
                 : 'bg-amber-950/40 border-amber-500/40 text-amber-300 hover:bg-amber-900/40'
             }`}
           >
             <Cpu className="w-3.5 h-3.5" />
-            <span className="hidden sm:inline max-w-[130px] truncate">{deviceName}</span>
+            <span className="hidden sm:inline max-w-[130px] truncate">{serverDevice}</span>
             <span className="flex h-2 w-2 relative">
-              <span className={`animate-ping absolute inline-flex h-full w-full rounded-full opacity-75 ${isGpu ? 'bg-emerald-400' : 'bg-amber-400'}`} />
-              <span className={`relative inline-flex rounded-full h-2 w-2 ${isGpu ? 'bg-emerald-500' : 'bg-amber-500'}`} />
+              <span className={`animate-ping absolute inline-flex h-full w-full rounded-full opacity-75 ${isGpu || isClientGpu ? 'bg-emerald-400' : 'bg-amber-400'}`} />
+              <span className={`relative inline-flex rounded-full h-2 w-2 ${isGpu || isClientGpu ? 'bg-emerald-500' : 'bg-amber-500'}`} />
             </span>
           </button>
         </div>

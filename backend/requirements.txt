@@ -1,22 +1,19 @@
 # VisionTrack AI - backend runtime dependencies
 #
-# PyTorch is intentionally NOT pinned here: the correct wheel depends on whether
-# you want CPU or CUDA inference. Install it first, from the right index:
-#
-#   CUDA 12.6:  pip install torch torchvision --index-url https://download.pytorch.org/whl/cu126
-#   CPU only:   pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
-#
-# Then:  pip install -r requirements.txt
-#
-# If torch/ultralytics are absent the API still boots and reports
-# aiAvailable=false, which puts the UI into an explicitly labelled Demo Mode.
+# Configured for CPU & Cloud Container compatibility (Render, Docker, Local).
+# Uses PyTorch CPU wheel index to maintain low memory usage and fast builds.
 
-fastapi>=0.110
-uvicorn[standard]>=0.27
+--extra-index-url https://download.pytorch.org/whl/cpu
+
+fastapi>=0.110.0
+uvicorn[standard]>=0.27.0
 python-multipart>=0.0.9
-pydantic>=2.6
-numpy>=1.24
-opencv-python-headless>=4.9
-ultralytics>=8.3
-lap>=0.5.12          # optimal assignment for ByteTrack / BoT-SORT
-imageio-ffmpeg>=0.4.9  # vendored FFmpeg fallback if no system binary is found
+pydantic>=2.6.0
+numpy>=1.24.0
+opencv-python-headless>=4.9.0.80
+torch>=2.2.0
+torchvision>=0.17.0
+ultralytics>=8.3.0
+lapx>=0.5.5
+imageio-ffmpeg>=0.4.9
+pytest>=8.0.0

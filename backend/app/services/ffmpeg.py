@@ -254,9 +254,81 @@ class VideoMetadata:
         return asdict(self)
 
 
+def _probe_with_ffmpeg(path: Path) -> VideoMetadata:
+    """Fallback metadata probe using ffmpeg -i when ffprobe is absent."""
+    ffmpeg = require_ffmpeg()
+    cmd = [ffmpeg, "-hide_banner", "-i", str(path)]
+    proc = _run(cmd, timeout=60)
+    text = (proc.stderr or "") + "\n" + (proc.stdout or "")
+    
+    # 1. Duration
+    dur_m = re.search(r"Duration:\s*(\d+):(\d+):(\d+(?:\.\d+)?)", text)
+    duration = 0.0
+    if dur_m:
+        h, m, s = float(dur_m.group(1)), float(dur_m.group(2)), float(dur_m.group(3))
+        duration = h * 3600 + m * 60 + s
+
+    # 2. Video Stream (width, height, codec, fps)
+    vid_m = re.search(r"Stream #\d+:\d+.*Video:\s*([a-zA-Z0-9_-]+).*?,\s*(\d+)x(\d+)", text)
+    if not vid_m:
+        raise FFmpegError("No decodable video stream found in file.", stderr=text, command=cmd)
+    
+    codec = vid_m.group(1)
+    width = int(vid_m.group(2))
+    height = int(vid_m.group(3))
+
+    fps_m = re.search(r"(\d+(?:\.\d+)?)\s*(?:fps|tbr)", text)
+    fps = float(fps_m.group(1)) if fps_m else 30.0
+
+    # 3. Audio Stream
+    aud_m = re.search(r"Stream #\d+:\d+.*Audio:\s*([a-zA-Z0-9_-]+)", text)
+    has_audio = aud_m is not None
+    audio_codec = aud_m.group(1) if aud_m else None
+
+    # 4. Bitrate
+    br_m = re.search(r"bitrate:\s*(\d+)\s*kb/s", text)
+    bitrate = int(br_m.group(1)) * 1000 if br_m else None
+
+    # 5. Rotation
+    rot_m = re.search(r"rotate\s*:\s*(\d+)", text)
+    rotation = int(rot_m.group(1)) if rot_m else 0
+    rotation = ((rotation % 360) + 360) % 360
+    if rotation in (90, 270):
+        width, height = height, width
+
+    frame_count = max(1, int(round(duration * fps))) if (duration > 0 and fps > 0) else 0
+    try:
+        size_bytes = path.stat().st_size
+    except OSError:
+        size_bytes = 0
+
+    return VideoMetadata(
+        duration=round(duration, 3),
+        width=width,
+        height=height,
+        fps=round(fps, 4),
+        frame_count=frame_count,
+        codec=codec,
+        codec_long=codec,
+        pixel_format=None,
+        bitrate=bitrate,
+        container=path.suffix.lstrip("."),
+        has_audio=has_audio,
+        audio_codec=audio_codec,
+        rotation=rotation,
+        size_bytes=size_bytes,
+        frame_count_exact=False,
+    )
+
+
 def probe_video(path: Path) -> VideoMetadata:
     """Extract real metadata. Raises FFmpegError with actionable diagnostics."""
-    ffprobe = require_ffprobe()
+    fp_info = ffprobe_info()
+    if not fp_info.available or not fp_info.path:
+        # Graceful fallback to ffmpeg metadata extraction if ffprobe is absent
+        return _probe_with_ffmpeg(path)
+
+    ffprobe = fp_info.path
     cmd = [
         ffprobe, "-hide_banner", "-loglevel", "error",
         "-print_format", "json",
@@ -272,15 +344,22 @@ def probe_video(path: Path) -> VideoMetadata:
         ) from exc
 
     if proc.returncode != 0:
-        raise FFmpegError(
-            "This file could not be read as a video.",
-            stderr=proc.stderr or proc.stdout, command=cmd,
-        )
+        # Attempt ffmpeg fallback
+        try:
+            return _probe_with_ffmpeg(path)
+        except Exception:
+            raise FFmpegError(
+                "This file could not be read as a video.",
+                stderr=proc.stderr or proc.stdout, command=cmd,
+            )
 
     try:
         payload = json.loads(proc.stdout or "{}")
     except json.JSONDecodeError as exc:
-        raise FFmpegError("FFprobe returned malformed output.", stderr=proc.stdout, command=cmd) from exc
+        try:
+            return _probe_with_ffmpeg(path)
+        except Exception:
+            raise FFmpegError("FFprobe returned malformed output.", stderr=proc.stdout, command=cmd) from exc
 
     streams = payload.get("streams") or []
     fmt = payload.get("format") or {}

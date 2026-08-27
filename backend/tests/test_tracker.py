@@ -199,7 +199,6 @@ def test_byte_rescues_low_confidence_window():
         f"BYTE rescue gave no advantage: {counts}"
     )
     assert counts["auto"] > counts["persistent"], f"auto should include BYTE: {counts}"
-    return counts
 
 
 def test_descriptor_is_size_invariant_and_colour_sensitive():
@@ -222,7 +221,6 @@ def test_descriptor_is_size_invariant_and_colour_sensitive():
     diff_colour = float(np.dot(d_red, d_blue))
     assert same_scale > 0.97, f"scale changed the descriptor too much: {same_scale:.4f}"
     assert diff_colour < 0.80, f"descriptor cannot tell the colours apart: {diff_colour:.4f}"
-    return same_scale, diff_colour
 
 
 def test_low_confidence_cannot_create_a_track():

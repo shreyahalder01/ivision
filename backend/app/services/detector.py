@@ -80,7 +80,7 @@ _env_cache: dict[str, Any] | None = None
 
 
 def probe_environment(refresh: bool = False) -> dict[str, Any]:
-    """Inspect torch/ultralytics/CUDA once and cache the verdict."""
+    """Inspect torch/ultralytics/CUDA/MPS once and cache the verified verdict."""
     global _env_cache
     with _env_lock:
         if _env_cache is not None and not refresh:
@@ -90,6 +90,7 @@ def probe_environment(refresh: bool = False) -> dict[str, Any]:
             "torchAvailable": False, "torchVersion": None,
             "ultralyticsAvailable": False, "ultralyticsVersion": None,
             "cudaAvailable": False, "cudaVersion": None,
+            "mpsAvailable": False,
             "device": "cpu", "deviceName": "CPU",
             "vramTotalGb": None, "gpuAccelerated": False,
             "aiAvailable": False, "reason": None,
@@ -98,25 +99,55 @@ def probe_environment(refresh: bool = False) -> dict[str, Any]:
             import torch  # type: ignore
 
             info["torchAvailable"] = True
-            info["torchVersion"] = torch.__version__
+            info["torchVersion"] = str(torch.__version__)
+            
+            # Configure optimal CPU thread concurrency for cloud/container environments
             try:
-                cuda_ok = bool(torch.cuda.is_available()) and not settings.force_cpu
+                cpu_count = os.cpu_count() or 4
+                optimal_threads = max(1, min(8, cpu_count))
+                torch.set_num_threads(optimal_threads)
             except Exception:
-                cuda_ok = False
-            if cuda_ok:
-                props = torch.cuda.get_device_properties(0)
-                info.update({
-                    "cudaAvailable": True,
-                    "cudaVersion": getattr(torch.version, "cuda", None),
-                    "device": "cuda:0",
-                    "deviceName": props.name,
-                    "vramTotalGb": round(props.total_memory / 1024**3, 2),
-                    "gpuAccelerated": True,
-                })
-            else:
-                import platform
+                pass
 
-                info["deviceName"] = platform.processor() or "CPU"
+            cuda_ok = False
+            if not settings.force_cpu and hasattr(torch, "cuda") and torch.cuda.is_available():
+                try:
+                    # Perform a live zero-tensor test on CUDA device to verify hardware execution
+                    _test_tensor = torch.zeros(1, device="cuda:0")
+                    props = torch.cuda.get_device_properties(0)
+                    total_vram = round(props.total_memory / (1024**3), 2)
+                    del _test_tensor
+                    cuda_ok = True
+                    info.update({
+                        "cudaAvailable": True,
+                        "cudaVersion": getattr(torch.version, "cuda", None),
+                        "device": "cuda:0",
+                        "deviceName": props.name,
+                        "vramTotalGb": total_vram,
+                        "gpuAccelerated": True,
+                    })
+                except Exception as cuda_err:
+                    log.warning("CUDA reported available but device initialization failed: %s", cuda_err)
+                    cuda_ok = False
+                    info["reason"] = f"CUDA device initialization failed ({cuda_err.__class__.__name__}). Falling back to CPU."
+
+            # Check Apple Silicon MPS fallback if CUDA is not present
+            if not cuda_ok and not settings.force_cpu:
+                try:
+                    if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+                        info.update({
+                            "mpsAvailable": True,
+                            "device": "mps",
+                            "deviceName": "Apple Silicon GPU (MPS)",
+                            "gpuAccelerated": True,
+                        })
+                except Exception:
+                    pass
+
+            if not info["gpuAccelerated"]:
+                import platform
+                proc_name = platform.processor() or platform.machine() or "CPU"
+                info["deviceName"] = f"CPU ({proc_name})"
                 if settings.force_cpu:
                     info["reason"] = "CPU inference forced via VISIONTRACK_FORCE_CPU."
         except Exception as exc:
@@ -126,7 +157,7 @@ def probe_environment(refresh: bool = False) -> dict[str, Any]:
             import ultralytics  # type: ignore
 
             info["ultralyticsAvailable"] = True
-            info["ultralyticsVersion"] = ultralytics.__version__
+            info["ultralyticsVersion"] = str(ultralytics.__version__)
         except Exception as exc:
             info["reason"] = info["reason"] or f"Ultralytics is not installed ({exc.__class__.__name__})."
 
@@ -435,12 +466,30 @@ class Detector:
                     model = YOLO(str(path))
                     model.to(self.device)
                 except Exception as exc:
-                    raise DetectorUnavailable(
-                        f"The {self.spec.label} model could not be loaded.",
-                        cause=f"{exc.__class__.__name__}: {exc}",
-                        action="Try a smaller model, or switch to CPU inference.",
-                        code="model_load_failed",
-                    ) from exc
+                    if self.device != "cpu":
+                        log.warning(
+                            "Failed to load %s on %s (%s). Falling back to CPU.",
+                            self.spec.label, self.device, exc
+                        )
+                        try:
+                            self.device = "cpu"
+                            cache_key = f"{self.key}:cpu"
+                            model = YOLO(str(path))
+                            model.to("cpu")
+                        except Exception as cpu_exc:
+                            raise DetectorUnavailable(
+                                f"The {self.spec.label} model could not be loaded on CPU.",
+                                cause=f"{cpu_exc.__class__.__name__}: {cpu_exc}",
+                                action="Check disk space or model weights.",
+                                code="model_load_failed",
+                            ) from cpu_exc
+                    else:
+                        raise DetectorUnavailable(
+                            f"The {self.spec.label} model could not be loaded.",
+                            cause=f"{exc.__class__.__name__}: {exc}",
+                            action="Try a smaller model, or switch to CPU inference.",
+                            code="model_load_failed",
+                        ) from exc
                 _model_cache[cache_key] = model
             self._model = model
 
@@ -468,7 +517,7 @@ class Detector:
         iou: float,
         class_ids: Sequence[int] | None,
     ) -> list[dict[str, np.ndarray]]:
-        """Run detection over a batch. Returns per-frame xyxy/conf/cls arrays."""
+        """Run detection over a batch. Returns per-frame xyxy/conf/cls arrays with CPU fallback."""
         if self._model is None:
             raise DetectorUnavailable(
                 "The detection model is not loaded.",
@@ -490,22 +539,38 @@ class Detector:
             results = self._model.predict(list(frames), **kwargs)
         except Exception as exc:
             message = str(exc).lower()
-            if "out of memory" in message or "cuda" in message and "memory" in message:
+            is_gpu_issue = ("out of memory" in message or "cuda" in message or "cufft" in message or "cublas" in message)
+            if is_gpu_issue and self.device != "cpu":
+                log.warning("GPU execution failure during detection (%s). Gracefully falling back to CPU.", exc)
+                try:
+                    self.device = "cpu"
+                    if self._model is not None:
+                        self._model.to("cpu")
+                    kwargs["device"] = "cpu"
+                    results = self._model.predict(list(frames), **kwargs)
+                except Exception as cpu_exc:
+                    raise DetectorUnavailable(
+                        "Detection failed on both GPU and CPU fallback.",
+                        cause=f"{cpu_exc.__class__.__name__}: {cpu_exc}",
+                        action="Retry with a smaller model or fewer target classes.",
+                        code="inference_failed",
+                    ) from cpu_exc
+            elif "out of memory" in message:
                 raise DetectorUnavailable(
-                    "The GPU ran out of memory during detection.",
+                    "The system ran out of memory during detection.",
                     cause=(
-                        f"{self.spec.label} at batch size {len(frames)} exceeded the "
-                        "available VRAM."
+                        f"{self.spec.label} at batch size {len(frames)} exceeded available memory."
                     ),
-                    action="Select a smaller model, or force CPU inference and retry.",
+                    action="Select a smaller model, or reduce video resolution and retry.",
                     code="gpu_oom",
                 ) from exc
-            raise DetectorUnavailable(
-                "Detection failed while processing a frame batch.",
-                cause=f"{exc.__class__.__name__}: {exc}",
-                action="Retry the analysis, or select a different model.",
-                code="inference_failed",
-            ) from exc
+            else:
+                raise DetectorUnavailable(
+                    "Detection failed while processing a frame batch.",
+                    cause=f"{exc.__class__.__name__}: {exc}",
+                    action="Retry the analysis, or select a different model.",
+                    code="inference_failed",
+                ) from exc
 
         out: list[dict[str, np.ndarray]] = []
         for res in results:

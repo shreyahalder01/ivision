@@ -1,3 +1,5 @@
+export type { ClientGpuCapabilities } from './lib/gpuDetection';
+
 export interface SystemCapabilities {
   version: string;
   ready: boolean;
