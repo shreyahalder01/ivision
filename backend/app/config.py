@@ -37,7 +37,7 @@ def _env_flag(name: str, default: bool = False) -> bool:
 @dataclass(frozen=True)
 class Settings:
     host: str = os.environ.get("VISIONTRACK_HOST", "127.0.0.1")
-    port: int = _env_int("VISIONTRACK_PORT", 8787)
+    port: int = _env_int("VISIONTRACK_PORT", _env_int("PORT", 8787))
 
     # Upload constraints. 2 GiB default ceiling; a clear error beats a silent stall.
     max_upload_bytes: int = _env_int("VISIONTRACK_MAX_UPLOAD_MB", 2048) * 1024 * 1024

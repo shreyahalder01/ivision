@@ -631,3 +631,33 @@ async def websocket_job_events(websocket: WebSocket, job_id: str) -> None:
         log.debug("WebSocket exception for %s: %s", job_id, exc)
     finally:
         manager.bus.unsubscribe(job_id, queue)
+
+
+# ---------------------------------------------------------------------------
+# Static frontend serving (Production build)
+# ---------------------------------------------------------------------------
+
+dist_dir = Path(__file__).resolve().parent.parent.parent / "dist"
+if not dist_dir.exists():
+    dist_dir = Path(__file__).resolve().parent.parent.parent / "frontend" / "dist"
+
+if dist_dir.exists() and (dist_dir / "index.html").exists():
+    from fastapi.staticfiles import StaticFiles
+
+    assets_dir = dist_dir / "assets"
+    if assets_dir.exists():
+        app.mount("/assets", StaticFiles(directory=str(assets_dir)), name="assets")
+
+    @app.get("/{full_path:path}")
+    async def serve_spa(full_path: str) -> Response:
+        """Serve SPA index.html or static build assets for non-API routes."""
+        if full_path.startswith("api/") or full_path.startswith("ws/"):
+            raise HTTPException(status_code=404, detail="Endpoint not found")
+        file_path = dist_dir / full_path
+        if file_path.is_file():
+            return FileResponse(str(file_path))
+        index_file = dist_dir / "index.html"
+        if index_file.exists():
+            return FileResponse(str(index_file))
+        raise HTTPException(status_code=404, detail="Frontend build index.html not found")
+

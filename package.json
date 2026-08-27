@@ -9,7 +9,8 @@
   "scripts": {
     "dev": "npm --prefix frontend run dev",
     "build": "npm --prefix frontend install && npm --prefix frontend run build",
-    "preview": "npm --prefix frontend run preview"
+    "preview": "npm --prefix frontend run preview",
+    "start": "uvicorn app.main:app --app-dir backend --host 0.0.0.0 --port 8787"
   },
   "devDependencies": {
     "typescript": "^5.6.2",
