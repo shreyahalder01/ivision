@@ -4,8 +4,10 @@ Frames arrive over an FFmpeg rawvideo pipe, read one at a time into a fixed
 buffer. Nothing proportional to video length is ever held in memory, which is
 what lets a 40-minute 4K file be analysed on a laptop.
 
-`-hwaccel auto` lets FFmpeg use D3D11VA/NVDEC/VAAPI for decode when the build
-supports it, and degrades to software decode when it does not.
+Hardware decode (`-hwaccel`) and hardware encode are both used only when they
+have been *functionally probed* on this host - see ffmpeg.hwaccel_decode_available
+and ffmpeg.preferred_encoder. On a CPU-only box (Render, most containers) the
+pipeline runs entirely in software with no behavioural difference.
 """
 from __future__ import annotations
 
@@ -18,7 +20,12 @@ from typing import Iterator
 
 import numpy as np
 
-from .ffmpeg import FFmpegError, hardware_encoders, require_ffmpeg
+from .ffmpeg import (
+    FFmpegError,
+    hwaccel_decode_available,
+    preferred_encoder,
+    require_ffmpeg,
+)
 
 log = logging.getLogger("visiontrack.frames")
 
@@ -36,7 +43,9 @@ class FrameReader:
         fps: source frame rate, needed to convert start_frame to a timestamp.
         stride: emit every Nth frame. FFmpeg still decodes all of them (required
             for inter-frame compression) but we skip the copy and the inference.
-        hwaccel: attempt hardware-accelerated decode.
+        hwaccel: allow hardware-accelerated decode. Only honoured when a
+            hardware decoder has actually been verified on this host, and
+            dropped automatically if the accelerated attempt fails to start.
     """
 
     def __init__(
@@ -56,7 +65,8 @@ class FrameReader:
         self.fps = float(fps) if fps and fps > 0 else 30.0
         self.start_frame = max(0, int(start_frame))
         self.stride = max(1, int(stride))
-        self.hwaccel = hwaccel
+        # Never claim hardware we have not proven exists.
+        self.hwaccel = bool(hwaccel) and hwaccel_decode_available()
         self._proc: subprocess.Popen[bytes] | None = None
         self._stderr_tail: list[str] = []
         self._stderr_thread: threading.Thread | None = None
@@ -115,6 +125,12 @@ class FrameReader:
                 creationflags=_CREATE_NO_WINDOW,
             )
         except OSError as exc:
+            if self.hwaccel:
+                # A driver that refuses to load must not cost us the whole job.
+                log.warning("hardware decode failed to start (%s) - retrying on CPU", exc)
+                self.hwaccel = False
+                self.open()
+                return
             raise FFmpegError(
                 "FFmpeg could not be started to read this video.",
                 stderr=str(exc), command=cmd,
@@ -204,7 +220,7 @@ class FrameWriter:
         self.dest = Path(dest)
         self.width, self.height = int(width), int(height)
         self.fps = float(fps) if fps > 0 else 30.0
-        self.encoder = encoder or (hardware_encoders() or ["libx264"])[0]
+        self.encoder = encoder or preferred_encoder()
         self._cmd = build_encode_command(
             require_ffmpeg(), width=self.width, height=self.height, fps=self.fps,
             dest=self.dest, encoder=self.encoder, crf=crf, audio_source=audio_source,

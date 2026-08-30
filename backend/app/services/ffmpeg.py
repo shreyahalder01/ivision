@@ -195,9 +195,32 @@ def require_ffprobe() -> str:
     return info.path
 
 
+_HW_ENCODER_ORDER = (
+    "h264_nvenc",
+    "h264_qsv",
+    "h264_amf",
+    "h264_videotoolbox",
+    "h264_vaapi",
+)
+
+# Extra flags each hardware encoder needs before it will even initialise.
+_HW_ENCODER_PROBE_FLAGS: dict[str, list[str]] = {
+    "h264_nvenc": ["-preset", "p1"],
+    "h264_qsv": [],
+    "h264_amf": ["-usage", "ultralowlatency"],
+    "h264_videotoolbox": [],
+    "h264_vaapi": ["-vf", "format=nv12,hwupload"],
+}
+
+
 @lru_cache(maxsize=1)
-def hardware_encoders() -> list[str]:
-    """Hardware H.264 encoders this build actually exposes, best first."""
+def compiled_hardware_encoders() -> list[str]:
+    """H.264 hardware encoders this *build* advertises, best first.
+
+    Presence here means nothing about the host: cloud FFmpeg builds routinely
+    list h264_nvenc on machines with no NVIDIA device at all. Use
+    :func:`hardware_encoders` for the answer that reflects real hardware.
+    """
     info = ffmpeg_info()
     if not info.available or not info.path:
         return []
@@ -206,8 +229,115 @@ def hardware_encoders() -> list[str]:
     except (OSError, subprocess.SubprocessError):
         return []
     text = proc.stdout or ""
-    ordered = ["h264_nvenc", "h264_qsv", "h264_amf", "h264_videotoolbox", "h264_vaapi"]
-    return [enc for enc in ordered if re.search(rf"\b{enc}\b", text)]
+    return [enc for enc in _HW_ENCODER_ORDER if re.search(rf"\b{enc}\b", text)]
+
+
+def _encoder_works(ffmpeg_path: str, encoder: str) -> bool:
+    """Actually encode two synthetic frames with `encoder`.
+
+    This is the only reliable test: it forces FFmpeg to open the device, load
+    the driver and initialise the session, which is exactly what fails at run
+    time on GPU-less hosts. Output goes to the null muxer so nothing is written.
+    """
+    cmd = [
+        ffmpeg_path,
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-nostdin",
+        "-f",
+        "lavfi",
+        "-i",
+        "color=c=black:s=320x240:r=25",
+        "-frames:v",
+        "2",
+    ]
+    if encoder == "h264_vaapi":
+        # VAAPI needs an explicit device before the input is parsed.
+        cmd[3:3] = ["-vaapi_device", os.environ.get("VISIONTRACK_VAAPI_DEVICE", "/dev/dri/renderD128")]
+    cmd += _HW_ENCODER_PROBE_FLAGS.get(encoder, [])
+    cmd += ["-c:v", encoder, "-f", "null", "-"]
+    try:
+        proc = _run(cmd, timeout=25)
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return proc.returncode == 0
+
+
+@lru_cache(maxsize=1)
+def hardware_encoders() -> list[str]:
+    """H.264 hardware encoders that genuinely work on *this host*, best first.
+
+    Every candidate the build advertises is functionally probed once, then the
+    result is cached for the process lifetime. On a CPU-only box (Render, most
+    containers) this returns `[]` and callers fall back to libx264.
+    """
+    if settings.force_cpu:
+        log.info("VISIONTRACK_FORCE_CPU set - hardware video encoders disabled")
+        return []
+    info = ffmpeg_info()
+    if not info.available or not info.path:
+        return []
+    working: list[str] = []
+    for enc in compiled_hardware_encoders():
+        if _encoder_works(info.path, enc):
+            log.info("hardware encoder %s verified on this host", enc)
+            working.append(enc)
+        else:
+            log.info("hardware encoder %s advertised by build but unusable here", enc)
+    if not working:
+        log.info("no usable hardware H.264 encoder - using libx264 (CPU)")
+    return working
+
+
+def preferred_encoder() -> str:
+    """The encoder every writer should default to: real hardware, else libx264."""
+    encoders = hardware_encoders()
+    return encoders[0] if encoders else "libx264"
+
+
+@lru_cache(maxsize=1)
+def hwaccel_decode_available() -> bool:
+    """Whether `-hwaccel auto` buys anything on this host.
+
+    FFmpeg silently degrades `-hwaccel auto` to software decode, so passing it
+    is not dangerous - but on GPU-less hosts it is pure noise in the logs, and
+    on partially-broken driver setups it can abort the decode outright. Probing
+    once and omitting the flag when it does nothing keeps the CPU path clean.
+    """
+    if settings.force_cpu:
+        return False
+    info = ffmpeg_info()
+    if not info.available or not info.path:
+        return False
+    try:
+        proc = _run([info.path, "-hide_banner", "-hwaccels"], timeout=15)
+    except (OSError, subprocess.SubprocessError):
+        return False
+    names = {
+        ln.strip()
+        for ln in (proc.stdout or "").splitlines()[1:]
+        if ln.strip() and not ln.startswith(" ")
+    }
+    # `cuda`/`vaapi`/etc. being *compiled in* is not enough either, so confirm
+    # by actually decoding two synthetic frames through the accelerator.
+    for name in ("cuda", "d3d11va", "videotoolbox", "qsv", "vaapi", "dxva2"):
+        if name not in names:
+            continue
+        cmd = [
+            info.path, "-hide_banner", "-loglevel", "error", "-nostdin",
+            "-hwaccel", name,
+            "-f", "lavfi", "-i", "color=c=black:s=320x240:r=25",
+            "-frames:v", "2", "-f", "null", "-",
+        ]
+        try:
+            if _run(cmd, timeout=25).returncode == 0:
+                log.info("hardware decode via %s verified on this host", name)
+                return True
+        except (OSError, subprocess.SubprocessError):
+            continue
+    log.info("no usable hardware video decoder - decoding on CPU")
+    return False
 
 
 def _as_float(value: Any) -> float | None:
@@ -537,9 +667,15 @@ def build_encode_command(
     crf: int = 20,
     audio_source: Path | None = None,
 ) -> list[str]:
-    """Command that consumes raw BGR24 frames on stdin and writes H.264."""
-    cmd = [
-        ffmpeg, "-hide_banner", "-loglevel", "error", "-y",
+    """Command that consumes raw BGR24 frames on stdin and writes H.264.
+
+    `encoder` should come from :func:`preferred_encoder` so it is known to work
+    on this host; anything unrecognised degrades to libx264 rather than failing.
+    """
+    cmd = [ffmpeg, "-hide_banner", "-loglevel", "error", "-y"]
+    if encoder == "h264_vaapi":
+        cmd += ["-vaapi_device", os.environ.get("VISIONTRACK_VAAPI_DEVICE", "/dev/dri/renderD128")]
+    cmd += [
         "-f", "rawvideo", "-vcodec", "rawvideo",
         "-s", f"{width}x{height}", "-pix_fmt", "bgr24",
         "-r", f"{fps:.6f}", "-i", "-",
@@ -551,6 +687,9 @@ def build_encode_command(
     if audio_source is not None:
         cmd += ["-map", "1:a:0?", "-c:a", "aac", "-b:a", "128k", "-shortest"]
 
+    # yuv420p is what software encoders need; hardware paths carry their own
+    # pixel format through the device filter chain instead.
+    software_pix_fmt = True
     if encoder == "h264_nvenc":
         cmd += ["-c:v", "h264_nvenc", "-preset", "p4", "-rc", "vbr", "-cq", str(crf), "-b:v", "0"]
     elif encoder == "h264_qsv":
@@ -559,10 +698,15 @@ def build_encode_command(
         cmd += ["-c:v", "h264_amf", "-quality", "balanced", "-rc", "cqp", "-qp_i", str(crf), "-qp_p", str(crf)]
     elif encoder == "h264_videotoolbox":
         cmd += ["-c:v", "h264_videotoolbox", "-q:v", str(max(1, min(100, 100 - crf * 2)))]
+    elif encoder == "h264_vaapi":
+        cmd += ["-vf", "format=nv12,hwupload", "-c:v", "h264_vaapi", "-qp", str(crf)]
+        software_pix_fmt = False
     else:
         cmd += ["-c:v", "libx264", "-preset", "medium", "-crf", str(crf)]
 
-    cmd += ["-pix_fmt", "yuv420p", "-movflags", "+faststart", str(dest)]
+    if software_pix_fmt:
+        cmd += ["-pix_fmt", "yuv420p"]
+    cmd += ["-movflags", "+faststart", str(dest)]
     return cmd
 
 
@@ -591,12 +735,19 @@ def transcode(
     if filters:
         cmd += ["-vf", ",".join(filters)]
 
-    encoder = (hardware_encoders() or ["libx264"])[0]
+    encoder = preferred_encoder()
     if encoder == "h264_nvenc":
         cmd += ["-c:v", "h264_nvenc", "-preset", "p4", "-rc", "vbr", "-cq", str(crf), "-b:v", "0"]
+    elif encoder == "h264_qsv":
+        cmd += ["-c:v", "h264_qsv", "-global_quality", str(crf)]
+    elif encoder == "h264_videotoolbox":
+        cmd += ["-c:v", "h264_videotoolbox", "-q:v", str(max(1, min(100, 100 - crf * 2)))]
     else:
         cmd += ["-c:v", "libx264", "-preset", "medium", "-crf", str(crf)]
-    cmd += ["-c:a", "copy", "-pix_fmt", "yuv420p", "-movflags", "+faststart"]
+    # `-c:a copy` fails outright when the source has no audio stream; `?` on the
+    # map makes the audio optional so silent clips transcode fine.
+    cmd += ["-map", "0:v:0", "-map", "0:a:0?", "-c:a", "copy"]
+    cmd += ["-pix_fmt", "yuv420p", "-movflags", "+faststart"]
     cmd += ["-progress", "pipe:1", "-nostats", str(dest)]
 
     proc = subprocess.Popen(
@@ -626,6 +777,7 @@ def transcode(
 def capabilities() -> dict[str, Any]:
     fm, fp = ffmpeg_info(), ffprobe_info()
     encoders = hardware_encoders()
+    advertised = compiled_hardware_encoders()
     return {
         "ffmpeg": {
             "available": fm.available, "path": fm.path,
@@ -636,6 +788,14 @@ def capabilities() -> dict[str, Any]:
             "version": fp.version, "source": fp.source,
         },
         "hardwareEncoders": encoders,
+        # Advertised-but-unusable encoders: the honest explanation for why a
+        # build that lists h264_nvenc still encodes on the CPU here.
+        "advertisedEncoders": advertised,
+        "unusableEncoders": [enc for enc in advertised if enc not in encoders],
         "preferredEncoder": encoders[0] if encoders else "libx264",
-        "ready": fm.available and fp.available,
+        "hardwareAccelerated": bool(encoders),
+        # ffprobe is a nicety, not a requirement: probe_video falls back to
+        # parsing `ffmpeg -i` output, so ffmpeg alone is a working pipeline.
+        "ready": fm.available,
+        "probeMode": "ffprobe" if fp.available else "ffmpeg-fallback",
     }

@@ -7,8 +7,10 @@ import json
 import logging
 import mimetypes
 import os
+import re
 import shutil
 import time
+import unicodedata
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any, AsyncGenerator
@@ -203,6 +205,40 @@ async def list_sample_videos() -> list[dict[str, Any]]:
 # Video Ingestion & Media Streaming
 # ---------------------------------------------------------------------------
 
+_WIN_FORBIDDEN = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
+
+
+def _sanitize_filename(name: str) -> str:
+    """Return a filesystem-safe version of *name*.
+
+    - Normalises Unicode (NFKD) and drops non-ASCII so the path is always
+      representable in the system's default encoding.
+    - Strips characters that are illegal on Windows (the most restrictive
+      common filesystem) to prevent OSError when opening the file.
+    - Collapses runs of whitespace/dots to a single underscore.
+    - Caps total length to 200 characters (well under Windows MAX_PATH with
+      the temp_id prefix and directory path already in the budget).
+    - Guarantees the extension is preserved and the stem is never empty.
+    """
+    # 1. Unicode normalise + strip non-ASCII
+    name = unicodedata.normalize("NFKD", name)
+    name = name.encode("ascii", "ignore").decode("ascii")
+    # 2. Split extension before mangling the stem
+    stem, _, ext = name.rpartition(".")
+    if not stem:          # no dot — treat the whole thing as a stem
+        stem, ext = ext, ""
+    else:
+        ext = "." + ext
+    # 3. Strip forbidden characters from the stem
+    stem = _WIN_FORBIDDEN.sub("_", stem)
+    stem = re.sub(r'[\s.]+', "_", stem)  # spaces and consecutive dots → _
+    stem = stem.strip("_") or "video"    # never let the stem be empty
+    # 4. Clamp length (extension preserved in full)
+    max_stem = 200 - len(ext)
+    stem = stem[:max_stem]
+    return stem + ext
+
+
 @app.post("/api/videos/upload")
 async def upload_video(file: UploadFile = File(...)) -> dict[str, Any]:
     """Upload video footage, run ffprobe validation, and generate thumbnails."""
@@ -230,7 +266,8 @@ async def upload_video(file: UploadFile = File(...)) -> dict[str, Any]:
         )
 
     temp_id = new_job_id()
-    dest_path = UPLOAD_DIR / f"{temp_id}_{file.filename}"
+    safe_name = _sanitize_filename(file.filename)
+    dest_path = UPLOAD_DIR / f"{temp_id}_{safe_name}"
 
     total_bytes = 0
     try:
